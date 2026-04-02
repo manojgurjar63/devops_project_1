@@ -1,0 +1,64 @@
+pipeline {
+    agent any
+    environment {
+        IMAGE_TAG = 'v2'
+        STABLE_TAG = 'v1'
+    }
+    stages {
+        stage('Copy files to workspace') {
+            steps {
+                sh 'rsync -avz /home/manoj/devops_projects/ /var/lib/jenkins/workspace/my_project_1/'
+            }
+        }
+        stage('Build Docker image') {
+            steps {
+                sh 'docker build -t manoj:${IMAGE_TAG} /var/lib/jenkins/workspace/my_project_1/'
+            }
+        }
+        stage('Tag and push to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
+                    sh 'docker tag manoj:${IMAGE_TAG} manojgurjar22/manoj:${IMAGE_TAG}'
+                    sh 'docker push manojgurjar22/manoj:${IMAGE_TAG}'
+                }
+            }
+        }
+        stage('Deploy container') {
+            steps {
+                sh '''
+                    docker stop manoj-app || true
+                    docker rm manoj-app || true
+                    docker run -d --name manoj-app -p 8090:80 manojgurjar22/manoj:v2
+                '''
+            }
+        }
+        stage('Health check') {
+            steps {
+                script {
+                    sleep(5)
+                    def curlExit = sh(
+                        script: 'curl -s -o /dev/null http://localhost:8090 -m 10',
+                        returnStatus: true
+                    )
+                    echo "Curl exit code: ${curlExit}"
+                    if (curlExit != 0) {
+                        echo "Health check failed — rolling back to v1"
+                        sh '''
+                            docker stop manoj-app || true
+                            docker rm manoj-app || true
+                            docker run -d --name manoj-app -p 8090:80 manojgurjar22/manoj:v1
+                        '''
+                        error("Deployment failed. Rolled back to v1.")
+                    } else {
+                        echo "v2 is live at http://localhost:8090"
+                    }
+                }
+            }
+        }
+    }
+}
